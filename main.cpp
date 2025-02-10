@@ -4,154 +4,13 @@
 #include <memory>
 #include <string>
 #include <algorithm>
+#include "Player.h"
+#include "Enemy.h"
+#include "InputManager.h"
+#include "IScene.h"
+#include "InputHandler.h"
 
 const char kWindowTitle[] = "LC2A_21_ヤラ_チョウセイ";
-
-struct Vector2Int final{
-	int x = 0;
-	int y = 0;
-};
-
-class InputManager {
-public:
-	InputManager() {}
-	~InputManager() {}
-	void Update() {
-		memcpy(preKeys_, keys_, 256);
-		Novice::GetHitKeyStateAll(keys_);
-	}
-	bool IsKeyPushed(int key) {
-		return keys_[key] && !preKeys_[key];
-	}
-	bool IsKeyHeld(int key) {
-		return keys_[key];
-	}
-	bool IsKeyReleased(int key) {
-		return !keys_[key] && preKeys_[key];
-	}
-private:
-	char keys_[256] = { 0 };
-	char preKeys_[256] = { 0 };
-};
-
-class BaseCharacter {
-public:
-	BaseCharacter() {}
-	virtual ~BaseCharacter() {}
-	virtual void Initialize() = 0;
-	virtual void Update() = 0;
-	virtual void Draw() = 0;
-};
-
-class Player : public BaseCharacter {
-public:
-	Player() {}
-	~Player() {}
-	void Initialize() override {}
-	void Update() override {
-		if (input_->IsKeyHeld(DIK_W) && pos_.y > 25) {
-			pos_.y = pos_.y - kSpeed;
-		}
-		if (input_->IsKeyHeld(DIK_S) && pos_.y < 655) {
-			pos_.y = pos_.y + kSpeed;
-		}
-		if (input_->IsKeyHeld(DIK_A) && pos_.x > 25) {
-			pos_.x = pos_.x - kSpeed;
-		}
-		if (input_->IsKeyHeld(DIK_D) && pos_.x < 1255) {
-			pos_.x = pos_.x + kSpeed;
-		}
-		Shot();
-	}
-	void Draw() override {
-		Novice::DrawEllipse(pos_.x, pos_.y, 25, 25, 0.0f, WHITE, kFillModeSolid);
-		if (isBulletActive_) {
-			Novice::DrawTriangle(
-				bulletPos_.x - 10, bulletPos_.y,
-				bulletPos_.x + 10, bulletPos_.y,
-				bulletPos_.x, bulletPos_.y - 20,
-				GREEN, kFillModeSolid
-			);
-		}
-	}
-	void SetInput(InputManager* inputManager) { input_ = inputManager; }
-private:
-	void Shot() {
-		if (input_->IsKeyHeld(DIK_F)) {
-			if (!isBulletActive_) {
-				isBulletActive_ = true;
-				bulletPos_.x += pos_.x;
-				bulletPos_.y += pos_.y;
-			}
-		}
-		if (isBulletActive_) {
-			bulletPos_.y -= 5;
-			if (bulletPos_.y <= 0) {
-				isBulletActive_ = false;
-				bulletPos_ = { 0,0 };
-			}
-		}
-	}
-private:
-	Vector2Int pos_ = { 640,360 };
-	const inline static int kSpeed = 5;
-
-	// バレット
-	Vector2Int bulletPos_ = { 0,0 };
-	bool isBulletActive_ = false;
-
-	// Input
-	InputManager* input_ = nullptr;
-};
-
-class Enemy : public BaseCharacter {
-public:
-	Enemy() {}
-	~Enemy() {}
-	void Initialize() override {
-		isAlive_ = true;
-		pos_.x = 600;
-		pos_.y = 100;
-		respownTime_ = 120;
-	}
-	void Update() override {
-		if (isAlive_) {
-			if (pos_.x >= 1230) {
-				pos_.x -= kSpeed;
-			}
-			if (pos_.x <= 50) {
-				pos_.x += kSpeed;
-			}
-		}
-	}
-	void Draw() override {
-		Novice::DrawEllipse(pos_.x, pos_.y, 50, 50, 0.0f, RED, kFillModeSolid);
-	}
-private:
-	Vector2Int pos_ = { 600,100 };
-	const inline static int kSpeed = 3;
-
-	bool isAlive_ = false;
-	int respownTime_ = 120;
-};
-
-// シーンインタフェース
-class IScene {
-public:
-	virtual ~IScene() {}
-	virtual void Initialize() = 0;
-	virtual void Update() = 0;
-	virtual void Draw() = 0;
-	virtual void SetNextScene(const std::string& nextSceneName) { nextSceneName_ = nextSceneName; }
-	virtual std::string GetNextScene() { return nextSceneName_; }
-	virtual void ChangeScene() = 0;
-	virtual void SetInput(InputManager* inputManager) {
-		inputManager_ = inputManager;
-	}
-protected:
-	std::string nextSceneName_ = {};
-	InputManager* inputManager_ = nullptr;
-};
 
 // タイトル
 class TitleScene : public IScene {
@@ -182,6 +41,10 @@ public:
 		bgTextureHandle_ = Novice::LoadTexture("./bg.png");
 		expTextureHandle_ = Novice::LoadTexture("./explode.png");
 
+		inputHandler = std::make_unique<InputHandler>();
+		inputHandler->AssignMoveLeftCommand2PressKeyA();
+		inputHandler->AssignMoveRightCommand2PressKeyD();
+
 		player_ = std::make_unique<Player>();
 		player_->Initialize();
 		player_->SetInput(inputManager_);
@@ -198,6 +61,15 @@ public:
 		}
 		if (posY2 == 400) {
 			posY2 = -400;
+		}
+		ICommand* newCommand = inputHandler->HandleInput();
+		
+		if (newCommand) {
+			command_ = newCommand;
+		}
+
+		if (this->command_) {
+			command_->Execute(*player_.get());
 		}
 
 		player_->Update();
@@ -227,6 +99,9 @@ private:
 	std::unique_ptr<Player> player_ = nullptr;
 	// Enemy
 	std::unique_ptr<Enemy> enemy_ = nullptr;
+
+	std::unique_ptr<InputHandler> inputHandler = nullptr;
+	ICommand* command_ = nullptr;
 };
 
 // クリア
@@ -252,12 +127,13 @@ public:
 // Windowsアプリでのエントリーポイント(main関数)
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
-	std::unique_ptr<IScene> scene = std::make_unique<TitleScene>();// タイトルシーンを生成
-	scene->Initialize();
-	std::unique_ptr<InputManager> inputManager = std::make_unique<InputManager>();// インプットマネージャを生成
-
 	// ライブラリの初期化
 	Novice::Initialize(kWindowTitle, 1280, 720);
+
+	std::unique_ptr<InputManager> inputManager = std::make_unique<InputManager>();// インプットマネージャを生成
+	std::unique_ptr<IScene> scene = std::make_unique<GameScene>();
+	scene->SetInput(inputManager.get());
+	scene->Initialize();
 
 	// キー入力結果を受け取る箱
 	char keys[256] = {0};
@@ -281,7 +157,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		scene->Update();
 
 		// シーンの切り替え
-		if (keys[DIK_SPACE] && !preKeys[DIK_SPACE]) {
+		/*if (keys[DIK_SPACE] && !preKeys[DIK_SPACE]) {
 			scene->ChangeScene();
 			std::unique_ptr<IScene> nextScene = nullptr;
 			if (scene->GetNextScene() == "TitleScene") {
@@ -302,7 +178,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 			if (nextScene) {
 				scene = std::move(nextScene);
 			}
-		}
+		}*/
 
 		///
 		/// ↑更新処理ここまで
